@@ -9,8 +9,6 @@ interface LayoutProps {
   onPlusClick: () => void;
 }
 
-// Fix: Moved TabButton outside Layout and typed it properly to fix the 'key' prop error
-// and avoid re-creating the component on every render of the parent.
 interface TabButtonProps {
   tab: { id: Tab; label: string; icon: React.ReactNode };
   activeTab: Tab;
@@ -66,6 +64,10 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, onPl
 
   return (
     <div className="pb-36 pt-12 min-h-screen">
+      <header className="fixed top-0 left-0 right-0 z-40 flex justify-center py-4 pointer-events-none">
+        <h1 className="text-xl font-bold tracking-tighter text-emerald-500 drop-shadow-md opacity-80 pointer-events-auto select-none">Habit Up</h1>
+      </header>
+
       <main className="max-w-xl mx-auto px-6">
         {children}
       </main>

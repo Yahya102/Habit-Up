@@ -1,76 +1,116 @@
 
-import { OnboardingAnswers, UserProfile } from "../types";
+import { OnboardingAnswers, UserProfile, Diagnosis } from "../types";
+import { supabase } from "./supabaseClient";
 
-const LOCAL_STORAGE_KEY = 'ai_executive_brain_users';
+/**
+ * Syncs the user profile to the Supabase 'profiles' table.
+ */
+export async function syncUserProfile(profile: UserProfile) {
+  const { data, error } = await supabase
+    .from('profiles')
+    .upsert({
+      id: profile.uid,
+      name: profile.name,
+      email: profile.email,
+      is_subscribed: profile.isSubscribed,
+      onboarding_data: {
+        ...profile.onboardingData,
+        saved_diagnosis: profile.diagnosis // Persist diagnosis inside the JSONB column
+      },
+      tasks: profile.tasks
+    })
+    .select()
+    .single();
 
-function getLocalUsers() {
-  const data = localStorage.getItem(LOCAL_STORAGE_KEY);
-  const users = data ? JSON.parse(data) : {};
-  
-  // Bootstrap with a demo account if it's the first time
-  if (Object.keys(users).length === 0) {
-    const demoEmail = 'demo@ai.com';
-    users[demoEmail] = {
-      uid: 'user_demo_123',
-      name: 'Executive Demo',
-      email: demoEmail,
-      isSubscribed: true,
-      tasks: [
-        { id: '1', title: 'Review Quarterly Strategy', reason: 'High impact roadmap alignment', importance: 5, completed: false, timeOfDay: 'MORNING' },
-        { id: '2', title: 'Brain Dump: New Product Vision', reason: 'Clear cognitive debt', importance: 4, completed: false, timeOfDay: 'AFTERNOON' }
-      ]
-    };
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(users));
+  if (error) {
+    console.error("Error syncing profile:", error);
+    throw error;
   }
-  
-  return users;
-}
-
-function saveLocalUser(email: string, profile: any) {
-  const users = getLocalUsers();
-  users[email] = profile;
-  localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(users));
+  return data;
 }
 
 export async function signUpUser(name: string, email: string, pass: string, onboardingData?: OnboardingAnswers): Promise<UserProfile> {
-  await new Promise(r => setTimeout(r, 600));
-  
-  const users = getLocalUsers();
-  if (users[email]) {
-    throw new Error("An account with this email already exists.");
-  }
+  const { data: authData, error: authError } = await supabase.auth.signUp({
+    email,
+    password: pass,
+    options: {
+      data: {
+        full_name: name
+      }
+    }
+  });
 
-  const uid = 'user_' + Math.random().toString(36).substr(2, 9);
-  const profileData: UserProfile = {
-    uid,
+  if (authError) throw authError;
+  if (!authData.user) throw new Error("Sign up failed - no user returned.");
+
+  const profile: UserProfile = {
+    uid: authData.user.id,
     name,
     email,
     isSubscribed: false,
     onboardingData,
     tasks: []
   };
-  
-  saveLocalUser(email, profileData);
-  return profileData;
+
+  await syncUserProfile(profile);
+  return profile;
 }
 
 export async function loginUser(email: string, pass: string): Promise<UserProfile> {
-  await new Promise(r => setTimeout(r, 600));
+  const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+    email,
+    password: pass
+  });
 
-  const users = getLocalUsers();
-  const found = users[email] as UserProfile;
-  
-  if (found) {
-    return found;
+  if (authError) throw authError;
+  if (!authData.user) throw new Error("Login failed - no user returned.");
+
+  const { data: profileRow, error: profileError } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', authData.user.id)
+    .single();
+
+  if (profileError && profileError.code !== 'PGRST116') {
+    throw profileError;
   }
+
+  const onboardingObj = profileRow?.onboarding_data || {};
   
-  throw new Error("No account found with this email. Please sign up.");
+  return {
+    uid: authData.user.id,
+    name: profileRow?.name || authData.user.user_metadata?.full_name || 'User',
+    email: authData.user.email,
+    isSubscribed: profileRow?.is_subscribed || false,
+    onboardingData: onboardingObj,
+    diagnosis: onboardingObj.saved_diagnosis,
+    tasks: profileRow?.tasks || []
+  };
 }
 
-export async function updateUserProfile(email: string, data: Partial<UserProfile>) {
-  const users = getLocalUsers();
-  if (users[email]) {
-    users[email] = { ...users[email], ...data };
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(users));
+export async function updateUserProfile(uid: string, data: Partial<UserProfile>) {
+  const updatePayload: any = {
+    name: data.name,
+    is_subscribed: data.isSubscribed,
+    tasks: data.tasks
+  };
+
+  if (data.onboardingData || data.diagnosis) {
+    updatePayload.onboarding_data = {
+      ...(data.onboardingData || {}),
+      saved_diagnosis: data.diagnosis
+    };
   }
+
+  const { error } = await supabase
+    .from('profiles')
+    .update(updatePayload)
+    .eq('id', uid);
+
+  if (error) throw error;
+}
+
+export async function logoutUser() {
+  const { error } = await supabase.auth.signOut();
+  if (error) throw error;
 }

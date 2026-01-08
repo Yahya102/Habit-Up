@@ -5,7 +5,7 @@ import { generateDiagnosis } from '../services/geminiService';
 
 interface DiagnosisProps {
   answers: OnboardingAnswers;
-  onComplete: (tasks: Task[]) => void;
+  onComplete: (tasks: Task[], diagnosis: Diagnosis) => void;
 }
 
 const DiagnosisScreen: React.FC<DiagnosisProps> = ({ answers, onComplete }) => {
@@ -37,6 +37,7 @@ const DiagnosisScreen: React.FC<DiagnosisProps> = ({ answers, onComplete }) => {
   }, [answers]);
 
   const handleStartCalculation = async () => {
+    if (!diagnosis) return;
     setCalculating(true);
     try {
       const habitTasks: Task[] = (diagnosis?.suggestedHabits || []).map(h => ({
@@ -59,7 +60,7 @@ const DiagnosisScreen: React.FC<DiagnosisProps> = ({ answers, onComplete }) => {
       }));
 
       const allInitialTasks = [...habitTasks, ...focusTasks];
-      setTimeout(() => onComplete(allInitialTasks), 2500);
+      setTimeout(() => onComplete(allInitialTasks, diagnosis), 2500);
     } catch (err) {
       console.error("Calculation Error:", err);
       setCalculating(false);

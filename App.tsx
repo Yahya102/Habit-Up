@@ -12,8 +12,9 @@ import TodayTab from './components/TodayTab';
 import BrainDumpTab from './components/BrainDumpTab';
 import PlanTab from './components/PlanTab';
 import InsightsTab from './components/InsightsTab';
-import { AppState, Tab, UserProfile, OnboardingAnswers, Task } from './types';
-import { updateUserProfile } from './services/authService';
+import { AppState, Tab, UserProfile, OnboardingAnswers, Task, Diagnosis } from './types';
+import { updateUserProfile, syncUserProfile } from './services/authService';
+import { supabase } from './services/supabaseClient';
 
 const INITIAL_PROFILE: UserProfile = {
   uid: '',
@@ -26,20 +27,64 @@ const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>('WELCOME');
   const [activeTab, setActiveTab] = useState<Tab>('TODAY');
   const [userProfile, setUserProfile] = useState<UserProfile>(INITIAL_PROFILE);
+  const [isLoading, setIsLoading] = useState(true);
   
-  // Global Modal State
   const [isHabitModalOpen, setIsHabitModalOpen] = useState(false);
   const [editingHabit, setEditingHabit] = useState<Task | null>(null);
   const [habitForm, setHabitForm] = useState({ action: '', place: '', time: '' });
 
-  // Persistence side effect
   useEffect(() => {
-    if (userProfile.email && userProfile.tasks) {
-      updateUserProfile(userProfile.email, { tasks: userProfile.tasks });
-    }
-  }, [userProfile.tasks, userProfile.email]);
+    const initAuth = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        const { data: profileRow } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', session.user.id)
+          .single();
 
-  // NEW: Scroll to top on every navigation/state change
+        if (profileRow) {
+          const onboardingObj = profileRow.onboarding_data || {};
+          setUserProfile({
+            uid: session.user.id,
+            name: profileRow.name,
+            email: session.user.email,
+            isSubscribed: profileRow.is_subscribed,
+            onboardingData: onboardingObj,
+            diagnosis: onboardingObj.saved_diagnosis,
+            tasks: profileRow.tasks || []
+          });
+          setAppState('MAIN');
+        }
+      }
+      setIsLoading(false);
+    };
+
+    initAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_OUT') {
+        setUserProfile(INITIAL_PROFILE);
+        setAppState('WELCOME');
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const sync = async () => {
+      if (userProfile.uid && appState === 'MAIN') {
+        try {
+          await updateUserProfile(userProfile.uid, { tasks: userProfile.tasks });
+        } catch (e) {
+          console.error("Auto-sync failed:", e);
+        }
+      }
+    };
+    sync();
+  }, [userProfile.tasks, userProfile.uid, appState]);
+
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [appState, activeTab]);
@@ -50,20 +95,25 @@ const App: React.FC = () => {
   };
 
   const handleAuthComplete = (profile: UserProfile) => {
-    const mergedProfile = {
-      ...profile,
-      onboardingData: profile.onboardingData || userProfile.onboardingData
-    };
-    setUserProfile(mergedProfile);
-    if (mergedProfile.onboardingData) {
+    setUserProfile(profile);
+    if (profile.onboardingData && appState === 'AUTH') {
       setAppState('SOLUTION_REVEAL');
     } else {
       setAppState('MAIN');
     }
   };
 
-  const handleDiagnosisComplete = (tasks: Task[]) => {
-    setUserProfile(prev => ({ ...prev, tasks }));
+  const handleDiagnosisComplete = async (tasks: Task[], diagnosis?: Diagnosis) => {
+    const updatedProfile = { ...userProfile, tasks, diagnosis: diagnosis || userProfile.diagnosis };
+    setUserProfile(updatedProfile);
+    
+    if (updatedProfile.uid) {
+      await updateUserProfile(updatedProfile.uid, { 
+        tasks, 
+        diagnosis: diagnosis || userProfile.diagnosis 
+      });
+    }
+    
     setAppState('PAYWALL');
   };
 
@@ -109,6 +159,15 @@ const App: React.FC = () => {
     setIsHabitModalOpen(false);
   };
 
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center animate-fade">
+        <div className="w-16 h-16 border-2 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin mb-4"></div>
+        <p className="text-emerald-500 text-xs font-black uppercase tracking-widest">Waking up the assistant...</p>
+      </div>
+    );
+  }
+
   const renderContent = () => {
     switch (appState) {
       case 'WELCOME': return <Welcome onStart={() => setAppState('ONBOARDING')} />;
@@ -117,13 +176,18 @@ const App: React.FC = () => {
       case 'AUTH': return <Auth onSuccess={handleAuthComplete} onboardingData={userProfile.onboardingData} />;
       case 'SOLUTION_REVEAL': return <SolutionReveal onNext={() => setAppState('DIAGNOSIS')} />;
       case 'DIAGNOSIS': return <DiagnosisScreen answers={userProfile.onboardingData!} onComplete={handleDiagnosisComplete} />;
-      case 'PAYWALL': return <Paywall onSubscribe={() => { setUserProfile({...userProfile, isSubscribed: true}); setAppState('MAIN'); }} />;
+      case 'PAYWALL': return <Paywall onSubscribe={async () => { 
+        const updated = {...userProfile, isSubscribed: true};
+        setUserProfile(updated);
+        if (updated.uid) await updateUserProfile(updated.uid, { isSubscribed: true });
+        setAppState('MAIN'); 
+      }} />;
       case 'MAIN': return (
         <Layout activeTab={activeTab} setActiveTab={setActiveTab} onPlusClick={() => openHabitModal()}>
-          {activeTab === 'TODAY' && <TodayTab tasks={userProfile.tasks} setTasks={setTasks} onEditHabit={openHabitModal} isSubscribed={userProfile.isSubscribed} />}
+          {activeTab === 'TODAY' && <TodayTab tasks={userProfile.tasks} setTasks={setTasks} onEditHabit={openHabitModal} isSubscribed={userProfile.isSubscribed} userIdentity={userProfile.diagnosis?.identityName} />}
           {activeTab === 'BRAIN_DUMP' && <BrainDumpTab tasks={userProfile.tasks} setTasks={setTasks} isSubscribed={userProfile.isSubscribed} />}
           {activeTab === 'PLAN' && <PlanTab tasks={userProfile.tasks} isSubscribed={userProfile.isSubscribed} />}
-          {activeTab === 'INSIGHTS' && <InsightsTab tasks={userProfile.tasks} isSubscribed={userProfile.isSubscribed} />}
+          {activeTab === 'INSIGHTS' && <InsightsTab tasks={userProfile.tasks} isSubscribed={userProfile.isSubscribed} userDiagnosis={userProfile.diagnosis} />}
         </Layout>
       );
     }
@@ -133,7 +197,6 @@ const App: React.FC = () => {
     <div className="min-h-screen selection:bg-emerald-500/30">
       {renderContent()}
 
-      {/* Global Centered Habit Modal */}
       {isHabitModalOpen && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-slate-950/80 backdrop-blur-xl animate-fade">
           <div className="premium-glass p-10 rounded-[3rem] w-full max-w-md border border-white/10 shadow-2xl relative">

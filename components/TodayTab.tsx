@@ -1,9 +1,7 @@
 
 import React, { useState, useMemo } from 'react';
-// Fix: Removed missing 'Language' export from types
 import { Task } from '../types';
 
-// Fix: Removed missing 'translations' import and defined local labels
 const labels = {
   today: 'Today',
   rituals: 'Rituals',
@@ -16,12 +14,12 @@ interface TodayTabProps {
   setTasks: (tasks: Task[]) => void;
   onEditHabit: (habit: Task) => void;
   isSubscribed: boolean;
-  // Fix: Made optional as App.tsx doesn't pass these
+  userIdentity?: string;
   onMenuClick?: () => void;
   lang?: string;
 }
 
-const TodayTab: React.FC<TodayTabProps> = ({ tasks, setTasks, onEditHabit, isSubscribed, onMenuClick, lang = 'en-US' }) => {
+const TodayTab: React.FC<TodayTabProps> = ({ tasks, setTasks, onEditHabit, isSubscribed, userIdentity, onMenuClick, lang = 'en-US' }) => {
   const [selectedDate, setSelectedDate] = useState(new Date());
   const t = labels;
 
@@ -55,6 +53,13 @@ const TodayTab: React.FC<TodayTabProps> = ({ tasks, setTasks, onEditHabit, isSub
   return (
     <div className={`transition-all duration-700 ${!isSubscribed ? 'blur-content' : 'animate-fade'}`}>
       <header className="mb-10 pt-4">
+        {userIdentity && (
+          <div className="mb-6 px-2">
+            <span className="text-[10px] font-black text-emerald-500 uppercase tracking-[0.4em] block mb-1">Elite Protocol for</span>
+            <h2 className="text-3xl font-bold text-white italic tracking-tight">{userIdentity}</h2>
+          </div>
+        )}
+        
         <div className="flex items-center justify-between mb-8 px-2">
           <button onClick={onMenuClick} className="w-12 h-12 rounded-full bg-white/5 border border-white/5 flex items-center justify-center text-white active:bg-white/10 transition-colors">
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16"/></svg>
