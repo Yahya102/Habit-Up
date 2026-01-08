@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Welcome from './components/Welcome';
 import Onboarding from './components/Onboarding';
 import WhyDifferent from './components/WhyDifferent';
@@ -16,6 +16,7 @@ import { AppState, Tab, UserProfile, OnboardingAnswers, Task, Diagnosis } from '
 import { updateUserProfile, syncUserProfile } from './services/authService';
 import { supabase } from './services/supabaseClient';
 
+const CACHE_KEY = 'habit_up_profile_cache';
 const INITIAL_PROFILE: UserProfile = {
   uid: '',
   name: 'Guest',
@@ -29,14 +30,33 @@ const App: React.FC = () => {
   const [userProfile, setUserProfile] = useState<UserProfile>(INITIAL_PROFILE);
   const [isLoading, setIsLoading] = useState(true);
   
+  // Ref to prevent initial sync from overwriting fresh data with old cached data
+  const isInitialMount = useRef(true);
+
   const [isHabitModalOpen, setIsHabitModalOpen] = useState(false);
   const [editingHabit, setEditingHabit] = useState<Task | null>(null);
   const [habitForm, setHabitForm] = useState({ action: '', place: '', time: '' });
 
+  // 1. Instant Load from Cache
   useEffect(() => {
+    const cached = localStorage.getItem(CACHE_KEY);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        setUserProfile(parsed);
+        setAppState('MAIN');
+        // We set loading to false immediately if we have a cached user
+        setIsLoading(false);
+      } catch (e) {
+        console.error("Cache parse error", e);
+      }
+    }
+
     const initAuth = async () => {
       const { data: { session } } = await supabase.auth.getSession();
+      
       if (session?.user) {
+        // Revalidate in background
         const { data: profileRow } = await supabase
           .from('profiles')
           .select('*')
@@ -45,7 +65,7 @@ const App: React.FC = () => {
 
         if (profileRow) {
           const onboardingObj = profileRow.onboarding_data || {};
-          setUserProfile({
+          const freshProfile: UserProfile = {
             uid: session.user.id,
             name: profileRow.name,
             email: session.user.email,
@@ -53,7 +73,10 @@ const App: React.FC = () => {
             onboardingData: onboardingObj,
             diagnosis: onboardingObj.saved_diagnosis,
             tasks: profileRow.tasks || []
-          });
+          };
+          
+          setUserProfile(freshProfile);
+          localStorage.setItem(CACHE_KEY, JSON.stringify(freshProfile));
           setAppState('MAIN');
         }
       }
@@ -64,17 +87,47 @@ const App: React.FC = () => {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === 'SIGNED_OUT') {
+        localStorage.removeItem(CACHE_KEY);
         setUserProfile(INITIAL_PROFILE);
         setAppState('WELCOME');
+      } else if (event === 'SIGNED_IN' && session) {
+        // Handle sign in profile fetch
+        const { data: profileRow } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', session.user.id)
+          .single();
+        
+        if (profileRow) {
+          const onboardingObj = profileRow.onboarding_data || {};
+          const profile = {
+            uid: session.user.id,
+            name: profileRow.name,
+            email: session.user.email,
+            isSubscribed: profileRow.is_subscribed,
+            onboardingData: onboardingObj,
+            diagnosis: onboardingObj.saved_diagnosis,
+            tasks: profileRow.tasks || []
+          };
+          setUserProfile(profile);
+          localStorage.setItem(CACHE_KEY, JSON.stringify(profile));
+        }
       }
     });
 
     return () => subscription.unsubscribe();
   }, []);
 
+  // 2. Optimized Auto-Sync
   useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
+
     const sync = async () => {
       if (userProfile.uid && appState === 'MAIN') {
+        localStorage.setItem(CACHE_KEY, JSON.stringify(userProfile));
         try {
           await updateUserProfile(userProfile.uid, { tasks: userProfile.tasks });
         } catch (e) {
@@ -82,7 +135,9 @@ const App: React.FC = () => {
         }
       }
     };
-    sync();
+
+    const timeout = setTimeout(sync, 1000); // Debounce sync
+    return () => clearTimeout(timeout);
   }, [userProfile.tasks, userProfile.uid, appState]);
 
   useEffect(() => {
@@ -96,6 +151,7 @@ const App: React.FC = () => {
 
   const handleAuthComplete = (profile: UserProfile) => {
     setUserProfile(profile);
+    localStorage.setItem(CACHE_KEY, JSON.stringify(profile));
     if (profile.onboardingData && appState === 'AUTH') {
       setAppState('SOLUTION_REVEAL');
     } else {
@@ -104,14 +160,20 @@ const App: React.FC = () => {
   };
 
   const handleDiagnosisComplete = async (tasks: Task[], diagnosis?: Diagnosis) => {
-    const updatedProfile = { ...userProfile, tasks, diagnosis: diagnosis || userProfile.diagnosis };
+    const updatedProfile = { 
+      ...userProfile, 
+      tasks, 
+      diagnosis: diagnosis || userProfile.diagnosis 
+    };
     setUserProfile(updatedProfile);
+    localStorage.setItem(CACHE_KEY, JSON.stringify(updatedProfile));
     
     if (updatedProfile.uid) {
-      await updateUserProfile(updatedProfile.uid, { 
-        tasks, 
-        diagnosis: diagnosis || userProfile.diagnosis 
-      });
+      try {
+        await syncUserProfile(updatedProfile);
+      } catch (e) {
+        console.error("Diagnosis sync failed:", e);
+      }
     }
     
     setAppState('PAYWALL');
@@ -159,9 +221,9 @@ const App: React.FC = () => {
     setIsHabitModalOpen(false);
   };
 
-  if (isLoading) {
+  if (isLoading && !userProfile.uid) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center animate-fade">
+      <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center animate-fade bg-slate-950">
         <div className="w-16 h-16 border-2 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin mb-4"></div>
         <p className="text-emerald-500 text-xs font-black uppercase tracking-widest">Waking up the assistant...</p>
       </div>
@@ -179,6 +241,7 @@ const App: React.FC = () => {
       case 'PAYWALL': return <Paywall onSubscribe={async () => { 
         const updated = {...userProfile, isSubscribed: true};
         setUserProfile(updated);
+        localStorage.setItem(CACHE_KEY, JSON.stringify(updated));
         if (updated.uid) await updateUserProfile(updated.uid, { isSubscribed: true });
         setAppState('MAIN'); 
       }} />;
